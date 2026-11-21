@@ -31,6 +31,7 @@ const connectButton=document.getElementById('connect');
 let device=null,characteristic=null,pointer=null,x=0,y=0;
 let queue=Promise.resolve();
 let generation=0;
+let writeMode='';
 const encoder=new TextEncoder();
 function connected(){return !!(device?.gatt?.connected && characteristic)}
 function updateStatus(){status.textContent=connected()?'Verbunden mit '+(device.name||'Calliope'):'Nicht verbunden';connectButton.textContent=connected()?'Trennen':'Bluetooth verbinden'}
@@ -41,8 +42,15 @@ function send(text){
  const current=generation;
  queue=queue.catch(()=>{}).then(async()=>{
    if(current!==generation||!connected())return;
-   await characteristic.writeValue(encoder.encode(text));
- }).catch(e=>{error.textContent='Senden fehlgeschlagen: '+e.message;});
+   const bytes=encoder.encode(text);
+   if(writeMode==='without'){
+     await characteristic.writeValueWithoutResponse(bytes);
+   }else if(writeMode==='with'){
+     await characteristic.writeValueWithResponse(bytes);
+   }else{
+     await characteristic.writeValue(bytes);
+   }
+ }).catch(e=>{error.textContent='Senden fehlgeschlagen ('+writeMode+'): '+(e?.message||e?.name||String(e)||'unbekannter Fehler');});
 }
 function display(){document.getElementById('xval').textContent=x;document.getElementById('yval').textContent=y;const range=joy.clientWidth*.36;stick.style.transform=`translate(${x*range/100}px,${-y*range/100}px)`}
 function reset(){x=0;y=0;display();send(command())}
@@ -54,7 +62,7 @@ joy.addEventListener('pointerup',release);joy.addEventListener('pointercancel',r
 document.getElementById('stop').addEventListener('click',()=>{pointer=null;reset()});
 window.addEventListener('blur',()=>{pointer=null;reset()});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){pointer=null;reset()}});
-function disconnect(){generation++;characteristic=null;queue=Promise.resolve();if(device?.gatt?.connected)device.gatt.disconnect();pointer=null;x=0;y=0;display();updateStatus()}
+function disconnect(){generation++;writeMode='';characteristic=null;queue=Promise.resolve();if(device?.gatt?.connected)device.gatt.disconnect();pointer=null;x=0;y=0;display();updateStatus()}
 connectButton.addEventListener('click',async()=>{
  error.textContent='';
  if(connected()){reset();await queue.catch(()=>{});disconnect();return}
@@ -62,11 +70,16 @@ connectButton.addEventListener('click',async()=>{
  try{
   const selected=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
   device=selected;
-  device.addEventListener('gattserverdisconnected',()=>{generation++;characteristic=null;pointer=null;x=0;y=0;display();updateStatus()});
+  device.addEventListener('gattserverdisconnected',()=>{generation++;writeMode='';characteristic=null;pointer=null;x=0;y=0;display();updateStatus()});
   const server=await device.gatt.connect();
   const service=await server.getPrimaryService(SERVICE);
   characteristic=await service.getCharacteristic(RX);
-  updateStatus();reset();
+  // Nordic UART RX is normally writable without response.
+  const props=characteristic.properties;
+  writeMode=props.writeWithoutResponse && typeof characteristic.writeValueWithoutResponse==='function'?'without':
+            props.write && typeof characteristic.writeValueWithResponse==='function'?'with':'legacy';
+  pointer=null;x=0;y=0;display();updateStatus();
+  error.textContent='Verbunden. Sendemodus: '+writeMode+'. Joystick vorsichtig testen.';
  }catch(e){error.textContent='Verbindung fehlgeschlagen: '+e.message;updateStatus()}
 });
 // Keep sending the current position while held; the Calliope stops if messages stop arriving.
