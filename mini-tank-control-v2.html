@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#101827">
+<title>Mini Tank Control</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#101827;color:#f8fafc}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:flex;justify-content:center}main{width:min(100%,650px);padding:calc(18px + env(safe-area-inset-top)) 18px calc(20px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:11px}header{display:flex;align-items:center;justify-content:space-between;gap:12px}h1{font-size:clamp(21px,5vw,30px);margin:0}#status{font-size:13px;color:#cbd5e1}button{border:0;border-radius:14px;padding:15px 19px;font:700 17px system-ui;cursor:pointer;touch-action:manipulation}#connect{background:#2563eb;color:white}.controls{display:grid;grid-template-columns:1fr;gap:12px}.hint{text-align:center;color:#cbd5e1;font-size:14px;margin:0}.joystick-wrap{flex:1;min-height:240px;display:grid;place-items:center}.joystick{width:min(94vw, 68dvh, 600px);height:auto;max-width:100%;aspect-ratio:1;border-radius:50%;position:relative;touch-action:none;user-select:none;background:radial-gradient(circle,#243449 0 12%,#1b293c 13% 48%,#172235 49% 100%);border:4px solid #40536d;box-shadow:inset 0 0 28px #080f1d,0 12px 35px #080e1a;overflow:hidden}.joystick:before,.joystick:after{content:"";position:absolute;background:#42546b;opacity:.7}.joystick:before{width:2px;top:6%;bottom:6%;left:calc(50% - 1px)}.joystick:after{height:2px;left:6%;right:6%;top:calc(50% - 1px)}.stick{position:absolute;width:28%;height:28%;left:36%;top:36%;border-radius:50%;background:linear-gradient(145deg,#60a5fa,#1d4ed8);border:4px solid #93c5fd;box-shadow:0 7px 22px #0008;pointer-events:none;transform:translate(0,0)}.readout{display:flex;justify-content:space-around;color:#cbd5e1;font-variant-numeric:tabular-nums}small{color:#94a3b8;text-align:center}#error{color:#fca5a5;min-height:1.3em;font-size:13px;text-align:center}@media(orientation:landscape) and (max-height:540px){main{display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:8px}header,.controls,.readout,.hint,#error,small{grid-column:2}header{grid-row:1}.joystick-wrap{grid-column:1;grid-row:1 / span 6;min-height:0}.joystick{width:min(88vh,48vw);height:auto}}
+</style>
+</head>
+<body><main>
+<header><div><h1>🕹️ Mini Tank Control</h1><div id="status" role="status">Nicht verbunden</div></div></header>
+<div class="controls"><button id="connect">Bluetooth verbinden</button></div>
+<div class="joystick-wrap"><div id="joystick" class="joystick" aria-label="Joystick zum Steuern des Mini Tanks"><div id="stick" class="stick"></div></div></div>
+<div class="readout"><span>Links/Rechts: <b id="xval">0</b></span><span>Vor/Zurück: <b id="yval">0</b></span></div>
+<p class="hint">Joystick bewegen: fahren · Loslassen: stoppen</p>
+<div id="error" role="alert"></div>
+<small>iPhone: Bluefy · Samsung: Chrome · Calliope mini V2</small>
+</main>
+<script>
+'use strict';
+const SERVICE='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const joy=document.getElementById('joystick');
+const stick=document.getElementById('stick');
+const status=document.getElementById('status');
+const error=document.getElementById('error');
+const connectButton=document.getElementById('connect');
+let device=null,characteristic=null,pointer=null,x=0,y=0;
+let queue=Promise.resolve();
+let generation=0;
+let writeMode='';
+const encoder=new TextEncoder();
+function connected(){return !!(device?.gatt?.connected && characteristic)}
+function updateStatus(){status.textContent=connected()?'Verbunden mit '+(device.name||'Calliope'):'Nicht verbunden';connectButton.textContent=connected()?'Trennen':'Bluetooth verbinden'}
+function format(v){return (v>=0?'+':'-')+String(Math.abs(v)).padStart(2,'0')}
+function command(){return 'X'+format(x)+',Y'+format(y)+'\n'}
+function send(text){
+ if(!connected())return;
+ const current=generation;
+ queue=queue.catch(()=>{}).then(async()=>{
+   if(current!==generation||!connected())return;
+   const bytes=encoder.encode(text);
+   if(writeMode==='without'){
+     await characteristic.writeValueWithoutResponse(bytes);
+   }else if(writeMode==='with'){
+     await characteristic.writeValueWithResponse(bytes);
+   }else{
+     await characteristic.writeValue(bytes);
+   }
+ }).catch(e=>{error.textContent='Senden fehlgeschlagen ('+writeMode+'): '+(e?.message||e?.name||String(e)||'unbekannter Fehler');});
+}
+function display(){document.getElementById('xval').textContent=x;document.getElementById('yval').textContent=y;const range=joy.clientWidth*.36;stick.style.transform=`translate(${x*range/100}px,${-y*range/100}px)`}
+function reset(){x=0;y=0;display();send(command())}
+function move(e){const r=joy.getBoundingClientRect();const cx=r.left+r.width/2,cy=r.top+r.height/2;const max=r.width*.36;let dx=(e.clientX-cx)/max,dy=(cy-e.clientY)/max;const len=Math.hypot(dx,dy);if(len>1){dx/=len;dy/=len}x=Math.round(dx*100);y=Math.round(dy*100);display();send(command())}
+joy.addEventListener('pointerdown',e=>{if(pointer!==null)return;pointer=e.pointerId;joy.setPointerCapture(pointer);move(e)});
+joy.addEventListener('pointermove',e=>{if(e.pointerId===pointer)move(e)});
+function release(e){if(e.pointerId!==pointer)return;pointer=null;reset()}
+joy.addEventListener('pointerup',release);joy.addEventListener('pointercancel',release);
+window.addEventListener('blur',()=>{pointer=null;reset()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){pointer=null;reset()}});
+function disconnect(){generation++;writeMode='';characteristic=null;queue=Promise.resolve();if(device?.gatt?.connected)device.gatt.disconnect();pointer=null;x=0;y=0;display();updateStatus()}
+connectButton.addEventListener('click',async()=>{
+ error.textContent='';
+ if(connected()){reset();await queue.catch(()=>{});disconnect();return}
+ if(!navigator.bluetooth){error.textContent='Dieser Browser unterstützt Web Bluetooth nicht. iPhone: Bluefy, Samsung: Chrome.';return}
+ try{
+  const selected=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
+  device=selected;
+  device.addEventListener('gattserverdisconnected',()=>{generation++;writeMode='';characteristic=null;pointer=null;x=0;y=0;display();updateStatus()});
+  const server=await device.gatt.connect();
+  const service=await server.getPrimaryService(SERVICE);
+  characteristic=await service.getCharacteristic(RX);
+  // Nordic UART RX is normally writable without response.
+  const props=characteristic.properties;
+  writeMode=props.writeWithoutResponse && typeof characteristic.writeValueWithoutResponse==='function'?'without':
+            props.write && typeof characteristic.writeValueWithResponse==='function'?'with':'legacy';
+  pointer=null;x=0;y=0;display();updateStatus();
+  error.textContent='';
+ }catch(e){error.textContent='Verbindung fehlgeschlagen: '+e.message;updateStatus()}
+});
+// Keep sending the current position while held; the Calliope stops if messages stop arriving.
+setInterval(()=>{if(pointer!==null&&connected())send(command())},100);
+updateStatus();display();
+</script></body></html>
